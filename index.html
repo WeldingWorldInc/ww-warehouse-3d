@@ -1,0 +1,1567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Welding World — 3D Warehouse Prototype</title>
+<style>
+  html, body { margin:0; padding:0; overflow:hidden; background:#87b9e0; height:100%; }
+  canvas { display:block; }
+  #info {
+    position:fixed; top:10px; left:10px; color:#fff; background:rgba(0,0,0,0.55);
+    padding:10px 14px; border-radius:6px; font:13px/1.5 -apple-system,Segoe UI,Arial,sans-serif;
+    pointer-events:none; user-select:none;
+  }
+  #crosshair {
+    position:fixed; top:50%; left:50%; width:6px; height:6px; margin:-3px 0 0 -3px;
+    border-radius:50%; background:rgba(255,255,255,0.85); pointer-events:none; display:none;
+  }
+  #blocker {
+    position:fixed; inset:0; background:rgba(10,12,14,0.72); display:flex;
+    align-items:center; justify-content:center; z-index:10; cursor:pointer;
+  }
+  #blocker .box {
+    color:#fff; font:16px/1.6 -apple-system,Segoe UI,Arial,sans-serif; text-align:center;
+    background:rgba(0,0,0,0.35); padding:24px 32px; border-radius:10px; max-width:420px;
+  }
+  #blocker .box b { font-size:19px; }
+  #movebar {
+    position:fixed; bottom:14px; left:50%; transform:translateX(-50%);
+    color:#fff; background:rgba(214,150,20,0.92); padding:9px 16px; border-radius:6px;
+    font:13px/1.4 -apple-system,Segoe UI,Arial,sans-serif; pointer-events:none;
+    user-select:none; display:none; text-align:center; white-space:nowrap;
+  }
+  #movebar b { letter-spacing:.5px; }
+  #vrbtn {
+    position:fixed; top:14px; right:14px; z-index:50;
+    padding:12px 22px; border:0; border-radius:7px; cursor:pointer;
+    background:#1f6fb0; color:#fff; font:bold 14px/1 -apple-system,Segoe UI,Arial,sans-serif;
+    letter-spacing:.6px; box-shadow:0 2px 10px rgba(0,0,0,.35);
+  }
+  #vrbtn[disabled] { background:#555b61; cursor:default; }
+</style>
+</head>
+<body>
+
+<button id="vrbtn">CHECKING VR…</button>
+<div id="movebar"></div>
+<div id="blocker">
+  <div class="box">
+    <b>Welding World — 3D Warehouse Prototype</b><br><br>
+    Click to enter god-mode<br>
+    <span style="opacity:.85">
+      W A S D — move &nbsp;·&nbsp; Mouse — look<br>
+      Q / E — down / up &nbsp;·&nbsp; Shift — run<br>
+      R — reset camera &nbsp;·&nbsp; Esc — release mouse
+    </span>
+  </div>
+</div>
+<div id="crosshair"></div>
+<div id="info">Welding World — 3D Warehouse Prototype<br>WASD move · Mouse look · Q/E down/up · Shift run · R reset · Esc release<br><b>M</b> = move machines</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function(){
+
+// ---------------------------------------------------------------
+// SETUP
+// ---------------------------------------------------------------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x8fc6ec);
+scene.fog = new THREE.Fog(0x8fc6ec, 70, 230);
+
+const camera = new THREE.PerspectiveCamera(72, window.innerWidth/window.innerHeight, 0.1, 500);
+camera.rotation.order = 'YXZ';
+
+const START_POS = new THREE.Vector3(0, 1.7, -10);
+const START_YAW = Math.PI; // face +Z, into the courtyard
+camera.position.copy(START_POS);
+camera.rotation.set(0, START_YAW, 0, 'YXZ');
+
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType('local-floor');
+document.body.appendChild(renderer.domElement);
+
+// player rig — in VR the headset drives the camera, so we move this group instead
+const player = new THREE.Group();
+player.add(camera);
+scene.add(player);
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ---------------------------------------------------------------
+// LIGHTING
+// ---------------------------------------------------------------
+const hemi = new THREE.HemisphereLight(0xbfe0ff, 0x6b6b5f, 0.9);
+scene.add(hemi);
+
+const sun = new THREE.DirectionalLight(0xfff3e0, 1.05);
+sun.position.set(40, 55, -20);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -70;
+sun.shadow.camera.right = 70;
+sun.shadow.camera.top = 70;
+sun.shadow.camera.bottom = -70;
+sun.shadow.camera.near = 1;
+sun.shadow.camera.far = 220;
+sun.shadow.bias = -0.0004;
+scene.add(sun);
+sun.target.position.set(0, 0, 24);
+scene.add(sun.target);
+
+// ---------------------------------------------------------------
+// MATERIALS
+// ---------------------------------------------------------------
+const concreteMat   = new THREE.MeshStandardMaterial({ color:0xd2ccbe, roughness:0.92, metalness:0.02 });
+const dividerMat     = new THREE.MeshStandardMaterial({ color:0xbdb6a6, roughness:0.92, metalness:0.02 });
+const roofMat        = new THREE.MeshStandardMaterial({ color:0xa79f8f, roughness:0.9 });
+const parapetMat     = new THREE.MeshStandardMaterial({ color:0x9e9684, roughness:0.9 });
+const fasciaMat      = new THREE.MeshStandardMaterial({ color:0xb7af9c, roughness:0.88 });
+const rackMat        = new THREE.MeshStandardMaterial({ color:0xd77a1b, roughness:0.6, metalness:0.3 });
+const palletMat      = new THREE.MeshStandardMaterial({ color:0xb08a52, roughness:0.95 });
+const stockMat       = new THREE.MeshStandardMaterial({ color:0xa8adb2, roughness:0.6, metalness:0.4 });
+const floorLineMat   = new THREE.MeshStandardMaterial({ color:0xe0c22a, roughness:0.85 });
+const manDoorMat     = new THREE.MeshStandardMaterial({ color:0x54595e, roughness:0.6, metalness:0.3 });
+const manDoorFrame   = new THREE.MeshStandardMaterial({ color:0x8f887a, roughness:0.8 });
+const doorMat        = new THREE.MeshStandardMaterial({ color:0x3c4145, roughness:0.55, metalness:0.35 });
+const doorFrameMat   = new THREE.MeshStandardMaterial({ color:0x8f887a, roughness:0.8 });
+const groundMat      = new THREE.MeshStandardMaterial({ color:0x6e6e6c, roughness:1.0 });
+const interiorFloor  = new THREE.MeshStandardMaterial({ color:0x8f9092, roughness:0.9 });
+const interiorWall   = new THREE.MeshStandardMaterial({ color:0xece7da, roughness:0.85 });
+const propMat        = new THREE.MeshStandardMaterial({ color:0x9aa2a8, roughness:0.6, metalness:0.4 });
+const propMat2       = new THREE.MeshStandardMaterial({ color:0x5b6b74, roughness:0.7 });
+const trunkMat       = new THREE.MeshStandardMaterial({ color:0x6b5644, roughness:1 });
+const leafMat        = new THREE.MeshStandardMaterial({ color:0x4f7a3d, roughness:1 });
+
+// ---------------------------------------------------------------
+// GROUND
+// ---------------------------------------------------------------
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(160, 160), groundMat);
+ground.rotation.x = -Math.PI/2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ---------------------------------------------------------------
+// LAYOUT CONSTANTS
+// world axes: +Z = deeper into the courtyard (away from entrance)
+//             +X = right row (Welding World), -X = left row
+// ---------------------------------------------------------------
+const UNIT_W   = 7;    // along Z (width of one bay, door-facing)
+const UNIT_D   = 20;   // along X (depth of the building) ~65 ft — fits 2 cells end-to-end
+const UNIT_H   = 6;    // height
+const WALL_T   = 0.6;  // dividing wall thickness
+const DOOR_W   = 5.6;
+const DOOR_H   = 5.0;
+const FRONT_X_RIGHT = 7;   // right row front face x
+const FRONT_X_LEFT  = -7;  // left row front face x
+const Z_START  = 2;
+
+const RIGHT_COUNT = 6; // Welding World building
+const LEFT_COUNT  = 6;
+
+const buildingGroup = new THREE.Group();
+scene.add(buildingGroup);
+
+// ---------------------------------------------------------------
+// HELPERS
+// ---------------------------------------------------------------
+function addBox(group, w, h, d, x, y, z, mat, castShadow=true) {
+  const geo = new THREE.BoxGeometry(w, h, d);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(x, y, z);
+  mesh.castShadow = castShadow;
+  mesh.receiveShadow = true;
+  group.add(mesh);
+  return mesh;
+}
+
+function addDoorPlane(group, x, y, z, faceSign, closed) {
+  // faceSign = +1 -> normal points +X, -1 -> normal points -X
+  const mat = closed ? doorMat : null;
+  if (!closed) return; // open bay has no door plane
+  const geo = new THREE.PlaneGeometry(DOOR_W, DOOR_H);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(x, y, z);
+  mesh.rotation.y = faceSign > 0 ? Math.PI/2 : -Math.PI/2;
+  mesh.receiveShadow = true;
+  group.add(mesh);
+
+  // simple frame trim
+  const frameThick = 0.25;
+  const frameDepth = 0.15;
+  const top = addBox(group, frameDepth, frameThick, DOOR_W+frameThick*2,
+    x + faceSign*0.03, y + DOOR_H/2 + frameThick/2, z, doorFrameMat, false);
+  top.rotation.y = 0;
+  const left = addBox(group, frameDepth, DOOR_H+frameThick, frameThick,
+    x + faceSign*0.03, y, z - DOOR_W/2 - frameThick/2, doorFrameMat, false);
+  const right = addBox(group, frameDepth, DOOR_H+frameThick, frameThick,
+    x + faceSign*0.03, y, z + DOOR_W/2 + frameThick/2, doorFrameMat, false);
+}
+
+function addRoofDetail(g, frontX, faceSign, zCenter) {
+  const bodyCenterX = frontX + faceSign*(UNIT_D/2);
+  // roof deck
+  addBox(g, UNIT_D+0.3, 0.25, UNIT_W+0.3, bodyCenterX, UNIT_H+0.12, zCenter, roofMat);
+  // parapet cap along the front edge
+  addBox(g, 0.42, 0.44, UNIT_W+0.34, frontX + faceSign*0.10, UNIT_H+0.44, zCenter, parapetMat, false);
+  // projecting eave / fascia band over the door head
+  addBox(g, 0.78, 0.58, UNIT_W+0.26, frontX - faceSign*0.24, UNIT_H-0.20, zCenter, fasciaMat);
+}
+
+// ---------------------------------------------------------------
+// BAY FIT-OUT — man door, pallet racking, painted floor markings
+// ---------------------------------------------------------------
+function addRack(parent, cx, cz, wZ) {
+  const h = 3.4, d = 0.95, bays = 3, bw = wZ / bays;
+  for (let i = 0; i <= bays; i++) {
+    const uz = cz - wZ/2 + i*bw;
+    [-d/2, d/2].forEach(dx => addBox(parent, 0.1, h, 0.1, cx + dx, h/2, uz, rackMat));
+  }
+  [0.95, 1.95, 2.95].forEach(by => {
+    [-d/2, d/2].forEach(dx => addBox(parent, 0.1, 0.11, wZ, cx + dx, by, cz, rackMat, false));
+  });
+  for (let i = 0; i < bays; i++) {
+    const pz = cz - wZ/2 + bw*(i + 0.5);
+    [0.95, 1.95].forEach((by, k) => {
+      if ((i + k) % 3 === 2) return;
+      addBox(parent, 0.82, 0.11, bw - 0.4, cx, by + 0.06, pz, palletMat, false);
+      addBox(parent, 0.72, 0.52, bw - 0.55, cx, by + 0.38, pz, stockMat, false);
+    });
+  }
+}
+
+function addBayFitout(frontX, faceSign, z0, z1) {
+  const g = new THREE.Group();
+  const zc = (z0 + z1) / 2;
+  const backX = frontX + faceSign * UNIT_D;
+
+  // ---- personnel door in the back wall
+  const mdz = z0 + 1.1;
+  addBox(g, 0.1, 2.25, 1.15, backX - faceSign*0.2, 1.12, mdz, manDoorFrame, false);
+  addBox(g, 0.07, 2.1, 0.95, backX - faceSign*0.27, 1.05, mdz, manDoorMat, false);
+
+  // ---- pallet racking against the back wall
+  addRack(g, backX - faceSign*0.85, zc + 0.6, 4.2);
+
+  // ---- painted floor markings: aisle lines running the depth of the bay
+  const runX = UNIT_D - 1.4;
+  const midX = frontX + faceSign*(UNIT_D/2 + 0.2);
+  [z1 - 2.45, z1 - 0.5].forEach(lz => {
+    addBox(g, runX, 0.02, 0.11, midX, 0.03, lz, floorLineMat, false);
+  });
+  // hatched threshold band just inside the door
+  for (let i = 0; i < 9; i++) {
+    const hz = z0 + 0.5 + i * (UNIT_W - 1.0) / 8;
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.02, 0.14), floorLineMat);
+    bar.position.set(frontX + faceSign*0.95, 0.03, hz);
+    bar.rotation.y = faceSign * 0.6;
+    g.add(bar);
+  }
+
+  buildingGroup.add(g);
+}
+
+// closed unit: solid block + door face
+function buildClosedUnit(frontX, faceSign, zCenter) {
+  const g = new THREE.Group();
+  const bodyCenterX = frontX + faceSign * (UNIT_D/2);
+  addBox(g, UNIT_D, UNIT_H, UNIT_W, bodyCenterX, UNIT_H/2, zCenter, concreteMat);
+  // roof cap (slightly larger, flat)
+  addRoofDetail(g, frontX, faceSign, zCenter);
+  // door
+  addDoorPlane(g, frontX + faceSign*0.03, DOOR_H/2, zCenter, faceSign, true);
+  // small wall light box
+  addBox(g, 0.3, 0.35, 0.3, frontX + faceSign*0.2, UNIT_H-0.8, zCenter - UNIT_W/2 + 0.6, propMat, false);
+  buildingGroup.add(g);
+}
+
+// open unit: enclosed shell with no front wall, interior lit
+function buildOpenUnit(frontX, faceSign, zCenter, z0, z1, withProps) {
+  if (withProps === undefined) withProps = true;
+  const g = new THREE.Group();
+  const backX = frontX + faceSign * UNIT_D;
+
+  // floor
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(UNIT_D, UNIT_W), interiorFloor);
+  floor.rotation.x = -Math.PI/2;
+  floor.position.set(frontX + faceSign*UNIT_D/2, 0.02, zCenter);
+  floor.receiveShadow = true;
+  g.add(floor);
+
+  // back wall
+  addBox(g, 0.3, UNIT_H, UNIT_W, backX - faceSign*0.15, UNIT_H/2, zCenter, interiorWall);
+
+  // side walls (z0 and z1 ends)
+  addBox(g, UNIT_D, UNIT_H, 0.3, frontX + faceSign*UNIT_D/2, UNIT_H/2, z0, interiorWall);
+  addBox(g, UNIT_D, UNIT_H, 0.3, frontX + faceSign*UNIT_D/2, UNIT_H/2, z1, interiorWall);
+
+  // ceiling
+  addBox(g, UNIT_D, 0.25, UNIT_W, frontX + faceSign*UNIT_D/2, UNIT_H-0.1, zCenter, roofMat);
+  // roof cap outside
+  addRoofDetail(g, frontX, faceSign, zCenter);
+
+  // front wall: piers either side of the opening + header above it
+  const pierW = (UNIT_W - DOOR_W) / 2;
+  [-1, 1].forEach(s => {
+    addBox(g, 0.32, UNIT_H, pierW, frontX, UNIT_H/2,
+           zCenter + s*(DOOR_W/2 + pierW/2), concreteMat);
+  });
+  addBox(g, 0.32, UNIT_H - DOOR_H, DOOR_W, frontX, (DOOR_H + UNIT_H)/2, zCenter, concreteMat);
+
+  // door frame outline only (no door plane -> open)
+  const frameThick = 0.25, frameDepth = 0.15;
+  addBox(g, frameDepth, frameThick, DOOR_W+frameThick*2, frontX+faceSign*0.03, DOOR_H+frameThick/2, zCenter, doorFrameMat, false);
+
+  // interior lighting — a row of fixtures down the depth of the bay
+  const fixtureMat = new THREE.MeshStandardMaterial({color:0xfff6da, emissive:0xfff2b0, emissiveIntensity:0.7});
+  const lightFracs = [0.2, 0.5, 0.8];
+  lightFracs.forEach((f, idx) => {
+    const lx = frontX + faceSign*UNIT_D*f;
+    const bulb = new THREE.PointLight(0xfff2cf, 0.85, 20, 2);
+    bulb.position.set(lx, UNIT_H-0.7, zCenter);
+    if (idx === 1) bulb.castShadow = true;
+    g.add(bulb);
+    const fixture = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.12, 0.4), fixtureMat);
+    fixture.position.set(lx, UNIT_H-0.3, zCenter);
+    g.add(fixture);
+  });
+
+  if (withProps) {
+    // simple interior props: workbench + shelving + a couple of crates
+    const benchX = frontX + faceSign*UNIT_D*0.75;
+    addBox(g, 2.2, 0.9, 1.0, benchX, 0.45, zCenter - 1.5, propMat2);
+    addBox(g, 2.2, 0.08, 1.0, benchX, 0.95, zCenter - 1.5, propMat);
+
+    const shelfX = backX - faceSign*0.6;
+    addBox(g, 0.5, 2.2, 3.5, shelfX, 1.1, zCenter + 1.6, propMat2);
+    addBox(g, 0.6, 0.05, 3.6, shelfX, 1.9, zCenter + 1.6, propMat);
+
+    addBox(g, 0.8, 0.8, 0.8, frontX + faceSign*UNIT_D*0.35, 0.4, zCenter + 2.4, propMat2);
+    addBox(g, 0.7, 0.7, 0.7, frontX + faceSign*UNIT_D*0.35, 0.35, zCenter + 1.4, propMat2);
+  }
+
+  buildingGroup.add(g);
+  return { zCenter: zCenter, frontX: frontX, faceSign: faceSign };
+}
+
+// ---------------------------------------------------------------
+// ROBOTIC SANDING CELL  (16 ft L x 10 ft W x 8 ft H)
+// ---------------------------------------------------------------
+const animators = [];
+const cells = [];
+const agvs = [];
+
+const extrusionMat = new THREE.MeshStandardMaterial({ color:0xc9ced3, roughness:0.35, metalness:0.75 });
+const safetyYellow = new THREE.MeshStandardMaterial({ color:0xe8c11c, roughness:0.5, metalness:0.25 });
+const guardMat     = new THREE.MeshStandardMaterial({ color:0xd4e6f0, roughness:0.08, metalness:0.05,
+                                                      transparent:true, opacity:0.16, side:THREE.DoubleSide });
+const robotYellow  = new THREE.MeshStandardMaterial({ color:0xf2c200, roughness:0.42, metalness:0.35 });
+const robotDark    = new THREE.MeshStandardMaterial({ color:0x33383d, roughness:0.5, metalness:0.55 });
+const steelMat     = new THREE.MeshStandardMaterial({ color:0x8d949a, roughness:0.4, metalness:0.8 });
+const railMat      = new THREE.MeshStandardMaterial({ color:0xb6bcc2, roughness:0.2, metalness:0.9 });
+const alumPartMat  = new THREE.MeshStandardMaterial({ color:0xc2c7cb, roughness:0.32, metalness:0.85 });
+const wwBlue       = new THREE.MeshStandardMaterial({ color:0x1f5fa8, roughness:0.45, metalness:0.3 });
+const cabinetMat   = new THREE.MeshStandardMaterial({ color:0xb9bfc4, roughness:0.45, metalness:0.5 });
+const epoxyMat     = new THREE.MeshStandardMaterial({ color:0xdcdcd6, roughness:0.35, metalness:0.05 });
+const logoMat      = new THREE.MeshStandardMaterial({ color:0xf2f5f7, roughness:0.6 });
+const discMat      = new THREE.MeshStandardMaterial({ color:0x6f6f72, roughness:0.85, metalness:0.2 });
+const hmiScreenMat = new THREE.MeshStandardMaterial({ color:0x123a5c, emissive:0x1f6fb0, emissiveIntensity:0.75 });
+const ductMat      = new THREE.MeshStandardMaterial({ color:0xd9bb1e, roughness:0.75 });
+const ductGrayMat  = new THREE.MeshStandardMaterial({ color:0xa9aeb3, roughness:0.7 });
+const paintRobotMat= new THREE.MeshStandardMaterial({ color:0xe9ecef, roughness:0.4, metalness:0.3 });
+const boothPanelMat= new THREE.MeshStandardMaterial({ color:0xeef3f6, roughness:0.5, metalness:0.05,
+                                                      transparent:true, opacity:0.55, side:THREE.DoubleSide });
+const boothFloorMat= new THREE.MeshStandardMaterial({ color:0xe6e9ea, roughness:0.3, metalness:0.05 });
+const paintedPartMat=new THREE.MeshStandardMaterial({ color:0x9aa6b2, roughness:0.18, metalness:0.5 });
+const paintDrumA   = new THREE.MeshStandardMaterial({ color:0x1f5fa8, roughness:0.45, metalness:0.3 });
+const paintDrumB   = new THREE.MeshStandardMaterial({ color:0xc7ccd1, roughness:0.45, metalness:0.4 });
+const filterMat    = new THREE.MeshStandardMaterial({ color:0xd9d2b8, roughness:0.95 });
+const mistMat      = new THREE.MeshStandardMaterial({ color:0xbcd6ef, roughness:1, transparent:true,
+                                                      opacity:0.2, depthWrite:false, side:THREE.DoubleSide });
+const boothWhite   = new THREE.MeshStandardMaterial({ color:0xeceef0, roughness:0.55, metalness:0.1 });
+const boothBlue    = new THREE.MeshStandardMaterial({ color:0x1e37a8, roughness:0.45, metalness:0.15 });
+const boothFrame   = new THREE.MeshStandardMaterial({ color:0xb4b9bd, roughness:0.4, metalness:0.6 });
+const boothRoof    = new THREE.MeshStandardMaterial({ color:0xd2d6d9, roughness:0.5, metalness:0.4 });
+const boothRib     = new THREE.MeshStandardMaterial({ color:0xc2c7cb, roughness:0.35, metalness:0.7 });
+const boothStack   = new THREE.MeshStandardMaterial({ color:0xc8ccd0, roughness:0.45, metalness:0.55 });
+const boothGlass   = new THREE.MeshStandardMaterial({ color:0xd8e8f2, roughness:0.05, metalness:0.05,
+                                                      transparent:true, opacity:0.24, side:THREE.DoubleSide });
+const boothFloorSlab=new THREE.MeshStandardMaterial({ color:0xc8cbcd, roughness:0.6, metalness:0.1 });
+const gratingMat   = new THREE.MeshStandardMaterial({ color:0x9aa0a5, roughness:0.5, metalness:0.7 });
+const boothLampMat = new THREE.MeshStandardMaterial({ color:0xfbfdff, emissive:0xdfeaff, emissiveIntensity:0.85 });
+const galvMat      = new THREE.MeshStandardMaterial({ color:0xbfc4c8, roughness:0.4, metalness:0.72 });
+const galvRib      = new THREE.MeshStandardMaterial({ color:0xacb2b7, roughness:0.35, metalness:0.8 });
+const louverMat    = new THREE.MeshStandardMaterial({ color:0x16279a, roughness:0.5, metalness:0.2 });
+const curtainMat   = new THREE.MeshStandardMaterial({ color:0xe8eef2, roughness:0.6, transparent:true,
+                                                      opacity:0.34, side:THREE.DoubleSide });
+
+function makeSign(title, sub, accent) {
+  const cv = document.createElement('canvas');
+  cv.width = 512; cv.height = 128;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#1b2026'; ctx.fillRect(0, 0, 512, 128);
+  ctx.fillStyle = accent;    ctx.fillRect(0, 0, 12, 128);
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#ffffff'; ctx.font = 'bold 46px Arial';
+  ctx.fillText(title, 34, 48);
+  ctx.fillStyle = '#9fb0bf'; ctx.font = '23px Arial';
+  ctx.fillText(sub, 36, 95);
+  const tex = new THREE.CanvasTexture(cv);
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1.95, 0.49),
+    new THREE.MeshBasicMaterial({ map: tex }));
+  return mesh;
+}
+
+// mode: 'sand' | 'paint'
+function buildProcessCell(cx, cz, rotY, label, mode) {
+  const paint = (mode === 'paint');
+  const cell = new THREE.Group();
+  cell.position.set(cx, 0, cz);
+  cell.rotation.y = rotY || 0;
+
+  const L = 4.88;  // 16 ft  — along local X (the long front face)
+  const W = 3.05;  // 10 ft  — along local Z (depth, front face at +Z)
+  const H = 2.44;  // 8 ft
+
+  const armMat = paint ? paintRobotMat : robotYellow;
+
+  // ---- machine base plate + epoxy floor inside
+  addBox(cell, L, 0.10, W, 0, 0.05, 0, steelMat, false);
+  const epoxy = new THREE.Mesh(new THREE.PlaneGeometry(L-0.16, W-0.16),
+    paint ? boothFloorMat : epoxyMat);
+  epoxy.rotation.x = -Math.PI/2;
+  epoxy.position.set(0, 0.11, 0);
+  epoxy.receiveShadow = true;
+  cell.add(epoxy);
+
+  // ---- aluminum extrusion frame
+  const P = 0.095;
+  [[-1,-1],[1,-1]].forEach(([sx,sz]) => {
+    addBox(cell, P, H, P, sx*(L/2), H/2, sz*(W/2), extrusionMat);
+  });
+  [-L/2, -L*0.06, L*0.30, L/2].forEach(px => {
+    addBox(cell, P*1.15, H, P*1.15, px, H/2, W/2, safetyYellow);
+  });
+  addBox(cell, P, H, P, L/2, H/2, -W/2, safetyYellow);
+
+  addBox(cell, L+P, 0.1, 0.1, 0, H, -W/2, extrusionMat);
+  addBox(cell, L+P, 0.1, 0.1, 0, H,  W/2, extrusionMat);
+  addBox(cell, 0.1, 0.1, W, -L/2, H, 0, extrusionMat);
+  addBox(cell, 0.1, 0.1, W,  L/2, H, 0, extrusionMat);
+  [-L*0.28, 0, L*0.28].forEach(px => {
+    addBox(cell, 0.08, 0.08, W, px, H-0.02, 0, extrusionMat, false);
+  });
+  [-W/2, W/2].forEach(pz => {
+    addBox(cell, L, 0.07, 0.07, 0, H*0.55, pz, extrusionMat, false);
+    addBox(cell, L, 0.07, 0.07, 0, H*0.16, pz, extrusionMat, false);
+  });
+  addBox(cell, 0.07, 0.07, W, -L/2, H*0.55, 0, extrusionMat, false);
+  addBox(cell, 0.07, 0.07, W,  L/2, H*0.55, 0, extrusionMat, false);
+
+  // ---- containment panels (paint booth walls are more opaque)
+  const pm = paint ? boothPanelMat : guardMat;
+  function panel(w, h, x, y, z, turn, mat) {
+    const p = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat || pm);
+    p.position.set(x, y, z);
+    if (turn) p.rotation.y = Math.PI/2;
+    cell.add(p);
+  }
+  panel(L-0.12, H-0.14, 0, H/2,  W/2 - 0.02, false, guardMat); // front stays clear for viewing
+  panel(L-0.12, H-0.14, 0, H/2, -W/2 + 0.02, false);
+  panel(W-0.12, H-0.14, -L/2 + 0.02, H/2, 0, true);
+  panel(W-0.12, H-0.14,  L/2 - 0.02, H/2, 0, true);
+
+  // ---- station sign on the front top rail
+  const sign = makeSign(paint ? 'PAINT STATION' : 'SANDING STATION',
+                        paint ? 'Robotic finishing — aluminum brackets'
+                              : 'Robotic sanding — aluminum brackets',
+                        paint ? '#2f7fd4' : '#e8c11c');
+  sign.position.set(-L*0.16, H + 0.3, W/2 + 0.02);
+  cell.add(sign);
+
+  // ---- linear rail system
+  const railZ = -0.72;
+  addBox(cell, L-1.9, 0.09, 0.12, -0.55, 0.16, railZ - 0.19, railMat, false);
+  addBox(cell, L-1.9, 0.09, 0.12, -0.55, 0.16, railZ + 0.19, railMat, false);
+  addBox(cell, L-1.9, 0.12, 0.62, -0.55, 0.06, railZ, robotDark, false);
+  addBox(cell, L-2.0, 0.09, 0.1, -0.55, 0.20, railZ - 0.42, robotDark, false);
+
+  // ---- 6-axis robot on travelling carriage
+  const carriage = new THREE.Group();
+  carriage.position.set(0, 0.21, railZ);
+  cell.add(carriage);
+  addBox(carriage, 0.74, 0.17, 0.66, 0, 0.085, 0, robotDark, true);
+  addBox(carriage, 0.52, 0.22, 0.52, 0, 0.28, 0, robotDark, true);
+
+  const j1 = new THREE.Group();
+  j1.position.set(0, 0.39, 0);
+  carriage.add(j1);
+  const turret = new THREE.Mesh(new THREE.CylinderGeometry(0.27, 0.32, 0.42, 22), armMat);
+  turret.position.y = 0.21; turret.castShadow = true;
+  j1.add(turret);
+
+  const shoulder = new THREE.Group();
+  shoulder.position.set(0, 0.44, 0);
+  j1.add(shoulder);
+  const shJoint = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.17, 0.4, 18), robotDark);
+  shJoint.rotation.z = Math.PI/2; shJoint.castShadow = true;
+  shoulder.add(shJoint);
+  const upper = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.98, 0.3), armMat);
+  upper.position.y = 0.49; upper.castShadow = true;
+  shoulder.add(upper);
+
+  const elbow = new THREE.Group();
+  elbow.position.set(0, 0.98, 0);
+  shoulder.add(elbow);
+  const elJoint = new THREE.Mesh(new THREE.CylinderGeometry(0.145, 0.145, 0.34, 18), robotDark);
+  elJoint.rotation.z = Math.PI/2; elJoint.castShadow = true;
+  elbow.add(elJoint);
+  const fore = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.8, 0.23), armMat);
+  fore.position.y = 0.4; fore.castShadow = true;
+  elbow.add(fore);
+  addBox(elbow, 0.2, 0.1, 0.1, 0, 0.62, 0.18, robotDark, false); // 3D scanner
+
+  // wrist: kept rotated so the tool hangs straight DOWN onto the top of the bracket
+  const wrist = new THREE.Group();
+  wrist.position.set(0, 0.8, 0);
+  elbow.add(wrist);
+  const wristCyl = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.2, 16), robotDark);
+  wristCyl.position.y = 0.05;
+  wrist.add(wristCyl);
+
+  let disc = null, mist = null;
+  if (!paint) {
+    // sanding head + abrasive disc, facing down at the top face of the bracket
+    const headBody = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.085, 0.14, 14), robotDark);
+    headBody.position.y = 0.13;
+    wrist.add(headBody);
+    disc = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.17, 0.035, 24), discMat);
+    disc.position.y = 0.21;
+    wrist.add(disc);
+  } else {
+    // spray applicator + atomized paint cone
+    const gunBody = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.075, 0.2, 14), robotDark);
+    gunBody.position.y = 0.14;
+    wrist.add(gunBody);
+    const nozzle = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.045, 0.08, 12), steelMat);
+    nozzle.position.y = 0.27;
+    wrist.add(nozzle);
+    addBox(wrist, 0.09, 0.14, 0.09, 0.11, 0.12, 0, steelMat, false); // paint cup
+    mist = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.44, 18, 1, true), mistMat);
+    mist.position.y = 0.52;   // cone widens downward toward the part
+    mist.rotation.x = Math.PI;
+    wrist.add(mist);
+  }
+
+  // ---- in-air rotary clamp fixture
+  const partY = 1.42;
+  const colX  = 1.42;
+  addBox(cell, 0.42, partY + 0.1, 0.42,  colX, (partY+0.1)/2, 0.12, robotDark);
+  addBox(cell, 0.34, partY + 0.05, 0.34, -colX, (partY+0.05)/2, 0.12, steelMat);
+  addBox(cell, 0.5, 0.3, 0.5, colX, 0.15, 0.12, robotDark, false);
+  [-1, 1].forEach(s => {
+    const chuck = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.24, 20), steelMat);
+    chuck.rotation.z = Math.PI/2;
+    chuck.position.set(s*(colX - 0.28), partY, 0.12);
+    chuck.castShadow = true;
+    cell.add(chuck);
+  });
+
+  // ---- the aluminum engine bracket (painted parts read darker/glossier)
+  const bodyMat = paint ? paintedPartMat : alumPartMat;
+  const partGroup = new THREE.Group();
+  partGroup.position.set(0, partY, 0.12);
+  cell.add(partGroup);
+  const pL = 2.25, topW = 1.62, bodyW = 1.02;
+  addBox(partGroup, pL, 0.075, topW, 0, 0.23, 0, bodyMat);
+  [-1,1].forEach(s => {
+    addBox(partGroup, pL, 0.30, 0.10, 0, 0.05, s*bodyW/2, bodyMat);
+    addBox(partGroup, pL, 0.09, 0.26, 0, -0.14, s*bodyW/2, bodyMat);
+  });
+  [-0.72, 0, 0.72].forEach(px => {
+    addBox(partGroup, 0.13, 0.30, bodyW, px, 0.05, 0, bodyMat, false);
+  });
+
+  // ---- control panel / HMI, front-left
+  const hmi = new THREE.Group();
+  hmi.position.set(-L/2 + 0.55, 1.22, W/2 - 0.16);
+  cell.add(hmi);
+  addBox(hmi, 0.52, 0.66, 0.13, 0, 0, 0, robotDark);
+  const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.31), hmiScreenMat);
+  screen.position.set(0, 0.09, 0.075);
+  hmi.add(screen);
+  [-0.13, 0, 0.13].forEach((bx, i) => {
+    const btn = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.02, 10),
+      new THREE.MeshStandardMaterial({ color: i===0 ? 0xd13b2e : 0x9aa2a8 }));
+    btn.rotation.x = Math.PI/2;
+    btn.position.set(bx, -0.2, 0.075);
+    hmi.add(btn);
+  });
+
+  // ---- right-end service module
+  const svc = new THREE.Group();
+  svc.position.set(L/2 - 0.62, 0, -W/2 + 0.62);
+  cell.add(svc);
+  addBox(svc, 0.9, 1.55, 0.9, 0, 0.78, 0, cabinetMat);
+  addBox(svc, 0.94, 0.06, 0.94, 0, 1.58, 0, robotDark, false);
+
+  if (!paint) {
+    // dust collection & wet containment
+    const drum = new THREE.Mesh(new THREE.CylinderGeometry(0.37, 0.37, 0.6, 22), wwBlue);
+    drum.position.y = 1.9; drum.castShadow = true;
+    svc.add(drum);
+    const lid = new THREE.Mesh(new THREE.CylinderGeometry(0.39, 0.39, 0.09, 22), robotDark);
+    lid.position.y = 2.24;
+    svc.add(lid);
+    const logo = new THREE.Mesh(new THREE.CircleGeometry(0.15, 20), logoMat);
+    logo.position.set(0, 1.92, 0.372);
+    svc.add(logo);
+  } else {
+    // paint supply: pump cabinet + two paint drums + exhaust filter bank
+    [-0.22, 0.22].forEach((ox, i) => {
+      const can = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.19, 0.44, 18),
+        i === 0 ? paintDrumA : paintDrumB);
+      can.position.set(ox, 1.8, 0);
+      can.castShadow = true;
+      svc.add(can);
+    });
+    addBox(svc, 0.88, 0.07, 0.88, 0, 2.05, 0, robotDark, false);
+    // filter bank on the back wall of the booth
+    for (let i = 0; i < 3; i++) {
+      addBox(cell, 0.9, 0.62, 0.1, -L*0.22 + i*0.95, 1.35, -W/2 + 0.12, filterMat, false);
+    }
+  }
+
+  // ---- extraction duct up to the roof rail
+  const dx = L/2 - 0.62, dz = -W/2 + 0.62;
+  const curve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(dx, paint ? 2.1 : 2.3, dz),
+    new THREE.Vector3(dx - 0.1, H - 0.12, dz + 0.05),
+    new THREE.Vector3(dx - 1.0, H - 0.16, dz + 0.35),
+    new THREE.Vector3(dx - 1.9, H - 0.42, dz + 0.5)
+  ]);
+  const dm = paint ? ductGrayMat : ductMat;
+  const duct = new THREE.Mesh(new THREE.TubeGeometry(curve, 48, 0.135, 12, false), dm);
+  duct.castShadow = true;
+  cell.add(duct);
+  for (let i = 0; i <= 18; i++) {
+    const t = i/18;
+    const pt = curve.getPointAt(t);
+    const tan = curve.getTangentAt(t);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.142, 0.022, 6, 14), dm);
+    ring.position.copy(pt);
+    ring.lookAt(pt.clone().add(tan));
+    cell.add(ring);
+  }
+
+  // ---- stack light
+  addBox(cell, 0.05, 0.9, 0.05, L/2 - 0.16, 1.9, -W/2 + 0.9, extrusionMat, false);
+  ['#d13b2e','#e8c11c','#3aa34a'].forEach((c, i) => {
+    const lamp = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.09, 12),
+      new THREE.MeshStandardMaterial({ color:c, emissive:c, emissiveIntensity:0.55 }));
+    lamp.position.set(L/2 - 0.16, 2.18 + i*0.1, -W/2 + 0.9);
+    cell.add(lamp);
+  });
+
+  scene.add(cell);
+
+  // ---- motion
+  const travel = (L/2) - 1.9;
+  const flip   = paint ? 0.9 : 0.30;  // sanding keeps the top face up; paint rolls the part
+  animators.push(function(t) {
+    carriage.position.x  = Math.sin(t*0.33) * travel;
+    j1.rotation.y        = Math.sin(t*0.33 + 1.2) * 0.13;
+    const sh = 0.34 + Math.sin(t*0.66) * 0.06;
+    const el = 1.38 + Math.sin(t*0.66 + 0.7) * 0.08;
+    shoulder.rotation.x  = sh;
+    elbow.rotation.x     = el;
+    wrist.rotation.x     = Math.PI - (sh + el);   // keep the tool pointing straight down
+    if (disc) disc.rotation.y = t * 26;
+    if (mist) mist.material.opacity = 0.16 + 0.10 * (0.5 + 0.5*Math.sin(t*5.0));
+    partGroup.rotation.x = Math.sin(t*0.2) * flip;
+  });
+
+  cells.push({ group: cell, label: label || 'Cell' });
+  return cell;
+}
+
+// ---------------------------------------------------------------
+// PAINT BOOTHS
+// ---------------------------------------------------------------
+
+// white / blue banded wall panel (the look from the booth reference)
+function bandedWall(parent, w, h, x, y, z, turn) {
+  function slab(sw, sh, sy, mat) {
+    const t = 0.09;
+    const g = turn ? new THREE.BoxGeometry(t, sh, sw) : new THREE.BoxGeometry(sw, sh, t);
+    const m = new THREE.Mesh(g, mat);
+    m.position.set(x, y - h/2 + sy + sh/2, z);
+    m.castShadow = true; m.receiveShadow = true;
+    parent.add(m);
+  }
+  slab(w, h, 0, boothWhite);                       // base panel
+  slab(w * 0.995, h * 0.26, h * 0.10, boothBlue);  // lower blue band
+  slab(w * 0.995, h * 0.22, h * 0.60, boothBlue);  // upper blue band
+}
+
+// ---- ENCLOSED DOWNDRAFT SPRAY BOOTH (drive-in, glass front doors, roof stack)
+function buildPaintBooth(cx, cz, rotY, label) {
+  const b = new THREE.Group();
+  b.position.set(cx, 0, cz);
+  b.rotation.y = rotY || 0;
+
+  const L = 7.2, W = 3.8, H = 3.1;
+  const FLOOR_Y = 0.16;
+
+  // ---- floor slab + center grating strips
+  addBox(b, L, FLOOR_Y, W, 0, FLOOR_Y/2, 0, boothFloorSlab, false);
+  [-0.62, 0.62].forEach(gz => {
+    addBox(b, L - 0.5, 0.04, 0.55, 0, FLOOR_Y + 0.02, gz, gratingMat, false);
+  });
+
+  // ---- walls
+  bandedWall(b, L, H, 0, FLOOR_Y + H/2, -W/2, false);   // long side
+  bandedWall(b, L, H, 0, FLOOR_Y + H/2,  W/2, false);   // long side
+  bandedWall(b, W, H, -L/2, FLOOR_Y + H/2, 0, true);    // back wall
+
+  // ---- corner posts
+  [[-1,-1],[-1,1],[1,-1],[1,1]].forEach(([sx,sz]) => {
+    addBox(b, 0.13, H + 0.1, 0.13, sx*(L/2), FLOOR_Y + (H+0.1)/2, sz*(W/2), boothFrame);
+  });
+
+  // ---- front: header band + three glass door leaves
+  addBox(b, 0.14, 0.52, W, L/2, FLOOR_Y + H - 0.26, 0, boothWhite);
+  const logo = makeSign('PAINT BOOTH', 'Welding World Inc. — downdraft', '#c0261c');
+  logo.rotation.y = Math.PI/2;
+  logo.position.set(L/2 + 0.09, FLOOR_Y + H - 0.26, 0.2);
+  b.add(logo);
+
+  const DH = H - 0.5;
+  const leafW = (W - 0.18) / 2;
+  const doorLeaves = [];
+  [-1, 1].forEach(function(side) {
+    const leaf = new THREE.Group();
+    leaf.position.set(L/2, FLOOR_Y, side * (W/2 - 0.09));  // hinge on the outer edge
+    b.add(leaf);
+    const mid = -side * leafW/2;
+    addBox(leaf, 0.1, DH, 0.08, 0, DH/2, 0, boothFrame, false);
+    addBox(leaf, 0.1, DH, 0.08, 0, DH/2, -side*(leafW - 0.04), boothFrame, false);
+    addBox(leaf, 0.1, 0.07, leafW, 0, 0.035, mid, boothFrame, false);
+    addBox(leaf, 0.1, 0.07, leafW, 0, DH - 0.035, mid, boothFrame, false);
+    addBox(leaf, 0.08, DH*0.26, leafW - 0.12, 0, DH*0.13 + 0.05, mid, boothBlue, false);
+    const glass = new THREE.Mesh(new THREE.PlaneGeometry(leafW - 0.14, DH*0.58), boothGlass);
+    glass.rotation.y = Math.PI/2;
+    glass.position.set(0.012, DH*0.66, mid);
+    leaf.add(glass);
+    doorLeaves.push({ g: leaf, dir: -side });
+  });
+
+  // doors swing open whenever an AGV is at the threshold or inside
+  let doorOpen = 0;
+  animators.push(function(t, dt) {
+    let want = 0;
+    for (let i = 0; i < agvs.length; i++) {
+      if (agvs[i].wantsPaintDoor) { want = 1; break; }
+    }
+    doorOpen += (want - doorOpen) * Math.min(1, (dt || 0.016) * 2.4);
+    const a = doorOpen * 1.72;
+    for (let i = 0; i < doorLeaves.length; i++) {
+      doorLeaves[i].g.rotation.y = doorLeaves[i].dir * a;
+    }
+  });
+
+  // ---- ribbed roof / filter plenum
+  addBox(b, L + 0.16, 0.16, W + 0.16, 0, FLOOR_Y + H + 0.08, 0, boothRoof);
+  const ribCount = Math.floor(L / 0.34);
+  for (let i = 0; i <= ribCount; i++) {
+    const rx = -L/2 + 0.2 + i * (L - 0.4) / ribCount;
+    addBox(b, 0.13, 0.09, W - 0.1, rx, FLOOR_Y + H + 0.20, 0, boothRib, false);
+  }
+  addBox(b, L + 0.2, 0.07, W + 0.2, 0, FLOOR_Y + H + 0.26, 0, boothFrame, false);
+
+  // ---- roof exhaust stack with hooded outlet
+  const sx = -L/2 + 1.1;
+  addBox(b, 1.0, 1.15, 1.0, sx, FLOOR_Y + H + 0.75, 0, boothStack);
+  addBox(b, 1.12, 0.1, 1.12, sx, FLOOR_Y + H + 1.35, 0, boothFrame, false);
+  // hood: bends over toward +X
+  const hood = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.82, 1.0), boothStack);
+  hood.position.set(sx + 0.3, FLOOR_Y + H + 1.82, 0);
+  hood.castShadow = true;
+  b.add(hood);
+  const lipMouth = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.68), robotDark);
+  lipMouth.rotation.y = Math.PI/2;
+  lipMouth.position.set(sx + 1.06, FLOOR_Y + H + 1.78, 0);
+  b.add(lipMouth);
+
+  // ---- interior lighting (recessed fixtures both sides)
+  [-1, 1].forEach(s => {
+    for (let i = 0; i < 3; i++) {
+      const fx = -L/2 + 1.3 + i * (L - 2.6) / 2;
+      const f = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.1, 0.22), boothLampMat);
+      f.position.set(fx, FLOOR_Y + H - 0.22, s * (W/2 - 0.22));
+      b.add(f);
+    }
+  });
+  const inner = new THREE.PointLight(0xf4f8ff, 1.0, 12, 2);
+  inner.position.set(0, FLOOR_Y + H - 0.6, 0);
+  b.add(inner);
+
+  // ---- drive-in ramps at the front
+  [-0.72, 0.72].forEach(rz => {
+    const ramp = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.08, 0.85), boothFrame);
+    ramp.position.set(L/2 + 0.78, FLOOR_Y/2, rz);
+    ramp.rotation.z = -Math.atan(FLOOR_Y / 1.5);
+    ramp.castShadow = true; ramp.receiveShadow = true;
+    b.add(ramp);
+  });
+
+  // ---- paint robot + bracket on a turntable inside the booth
+  addPaintRobot(b, -1.4, 0, FLOOR_Y);
+
+  scene.add(b);
+  cells.push({ group: b, label: label || 'Paint Booth' });
+  return b;
+}
+
+// white 6-axis paint robot + rotating bracket, dropped inside a booth
+function addPaintRobot(parent, rx, rz, baseY) {
+  const pedestal = new THREE.Group();
+  pedestal.position.set(rx, baseY, rz - 1.05);
+  parent.add(pedestal);
+  addBox(pedestal, 0.7, 0.3, 0.7, 0, 0.15, 0, robotDark);
+
+  const j1 = new THREE.Group();
+  j1.position.set(0, 0.3, 0);
+  pedestal.add(j1);
+  const turret = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.31, 0.4, 20), paintRobotMat);
+  turret.position.y = 0.2; turret.castShadow = true;
+  j1.add(turret);
+
+  const shoulder = new THREE.Group();
+  shoulder.position.set(0, 0.42, 0);
+  j1.add(shoulder);
+  const upper = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.92, 0.28), paintRobotMat);
+  upper.position.y = 0.46; upper.castShadow = true;
+  shoulder.add(upper);
+  const shJ = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.36, 16), robotDark);
+  shJ.rotation.z = Math.PI/2; shoulder.add(shJ);
+
+  const elbow = new THREE.Group();
+  elbow.position.set(0, 0.92, 0);
+  shoulder.add(elbow);
+  const elJ = new THREE.Mesh(new THREE.CylinderGeometry(0.135, 0.135, 0.3, 16), robotDark);
+  elJ.rotation.z = Math.PI/2; elbow.add(elJ);
+  const fore = new THREE.Mesh(new THREE.BoxGeometry(0.19, 0.76, 0.22), paintRobotMat);
+  fore.position.y = 0.38; fore.castShadow = true;
+  elbow.add(fore);
+
+  const wrist = new THREE.Group();
+  wrist.position.set(0, 0.76, 0);
+  elbow.add(wrist);
+  const gun = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.07, 0.2, 12), robotDark);
+  gun.position.y = 0.12; wrist.add(gun);
+  const nozzle = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.042, 0.08, 10), steelMat);
+  nozzle.position.y = 0.25; wrist.add(nozzle);
+  addBox(wrist, 0.085, 0.13, 0.085, 0.1, 0.11, 0, steelMat, false);
+  const mist = new THREE.Mesh(new THREE.ConeGeometry(0.19, 0.42, 16, 1, true), mistMat);
+  mist.position.y = 0.5; mist.rotation.x = Math.PI;
+  wrist.add(mist);
+
+  // turntable + bracket being painted
+  const tt = new THREE.Group();
+  tt.position.set(rx, baseY, rz + 0.35);
+  parent.add(tt);
+  addBox(tt, 0.9, 0.5, 0.9, 0, 0.25, 0, robotDark);
+  const table = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.62, 0.08, 24), steelMat);
+  table.position.y = 0.54; tt.add(table);
+
+  const part = new THREE.Group();
+  part.position.y = 0.58;
+  tt.add(part);
+  const pL = 2.1, topW = 1.35, bodyW = 0.85;
+  addBox(part, pL, 0.07, topW, 0, 0.36, 0, paintedPartMat);
+  [-1,1].forEach(s => {
+    addBox(part, pL, 0.28, 0.09, 0, 0.19, s*bodyW/2, paintedPartMat);
+    addBox(part, pL, 0.08, 0.24, 0, 0.02, s*bodyW/2, paintedPartMat);
+  });
+  [-0.66, 0, 0.66].forEach(px => {
+    addBox(part, 0.12, 0.28, bodyW, px, 0.19, 0, paintedPartMat, false);
+  });
+
+  animators.push(function(t) {
+    j1.rotation.y       = Math.sin(t*0.45) * 0.55;
+    const sh = 0.40 + Math.sin(t*0.7) * 0.10;
+    const el = 1.30 + Math.sin(t*0.7 + 0.8) * 0.12;
+    shoulder.rotation.x = sh;
+    elbow.rotation.x    = el;
+    wrist.rotation.x    = Math.PI - (sh + el);
+    mist.material.opacity = 0.15 + 0.11 * (0.5 + 0.5*Math.sin(t*5.5));
+    part.rotation.y     = t * 0.35;
+  });
+}
+
+// ---- OPEN-FACE PREP / SPRAY BOOTH (galvanized, blue filter bank, strip curtains)
+function buildPrepBooth(cx, cz, rotY, label) {
+  const b = new THREE.Group();
+  b.position.set(cx, 0, cz);
+  b.rotation.y = rotY || 0;
+
+  const D = 3.5, W = 4.2, H = 3.0;   // open face at +X
+
+  // ---- back wall: galvanized upper + blue louvered filter bank below
+  addBox(b, 0.1, H, W, -D/2, H/2, 0, galvMat);
+  addBox(b, 0.13, H * 0.36, W - 0.12, -D/2 + 0.05, H * 0.30, 0, boothBlue);
+  for (let i = 0; i < 6; i++) {
+    addBox(b, 0.04, 0.035, W - 0.3, -D/2 + 0.13, H*0.15 + i*0.16, 0, louverMat, false);
+  }
+  // quilted filter media across the upper back
+  for (let i = 0; i < 4; i++) {
+    addBox(b, 0.05, H*0.40, (W - 0.2)/4 - 0.06, -D/2 + 0.09, H*0.70, -W/2 + 0.1 + (i + 0.5)*(W-0.2)/4, filterMat, false);
+  }
+
+  // ---- side walls
+  [-1, 1].forEach(s => {
+    addBox(b, D, H, 0.09, 0, H/2, s*(W/2), galvMat);
+    // corrugation ribs
+    for (let i = 0; i < 7; i++) {
+      addBox(b, 0.05, H - 0.1, 0.12, -D/2 + 0.3 + i*(D-0.6)/6, H/2, s*(W/2 - 0.02), galvRib, false);
+    }
+  });
+
+  // ---- roof + front header band with lights
+  addBox(b, D + 0.12, 0.12, W + 0.12, 0, H + 0.06, 0, galvMat);
+  addBox(b, 0.14, 0.62, W + 0.12, D/2, H - 0.31, 0, galvMat);
+  for (let i = 0; i < 4; i++) {
+    const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.14, 0.7), boothLampMat);
+    lamp.position.set(D/2 - 0.12, H - 0.42, -W/2 + 0.45 + i * (W - 0.9)/3);
+    b.add(lamp);
+  }
+  const plate = makeSign('PREP BOOTH', 'Open-face — sand / prime', '#2f7fd4');
+  plate.rotation.y = Math.PI/2;
+  plate.position.set(D/2 + 0.09, H - 0.31, 0.5);
+  b.add(plate);
+
+  // ---- hanging plastic strip curtains at the open face, both sides
+  [-1, 1].forEach(s => {
+    for (let i = 0; i < 6; i++) {
+      const strip = new THREE.Mesh(new THREE.PlaneGeometry(0.26, H - 0.75), curtainMat);
+      strip.position.set(D/2 - 0.1 - i*0.055, (H - 0.75)/2 + 0.05, s*(W/2 - 0.12 - i*0.015));
+      strip.rotation.y = Math.PI/2 + (i % 2 ? 0.06 : -0.06);
+      b.add(strip);
+    }
+  });
+
+  // ---- floor + interior light
+  const fl = new THREE.Mesh(new THREE.PlaneGeometry(D - 0.1, W - 0.1), boothFloorSlab);
+  fl.rotation.x = -Math.PI/2;
+  fl.position.y = 0.03;
+  fl.receiveShadow = true;
+  b.add(fl);
+  const pl = new THREE.PointLight(0xeef4ff, 0.8, 11, 2);
+  pl.position.set(0.2, H - 0.7, 0);
+  b.add(pl);
+
+  // ---- a bracket on a work stand inside
+  addBox(b, 1.9, 0.75, 0.55, -0.3, 0.38, -0.5, robotDark);
+  addBox(b, 2.1, 0.07, 1.0, -0.3, 0.79, -0.5, alumPartMat);
+  addBox(b, 2.0, 0.26, 0.5, -0.3, 0.95, -0.5, alumPartMat);
+
+  scene.add(b);
+  cells.push({ group: b, label: label || 'Prep Booth' });
+  return b;
+}
+
+function buildDivider(frontX, faceSign, zCenter) {
+  const bodyCenterX = frontX + faceSign*(UNIT_D/2);
+  addBox(buildingGroup, UNIT_D+0.1, UNIT_H+0.2, WALL_T, bodyCenterX, (UNIT_H+0.2)/2, zCenter, dividerMat);
+}
+
+// ---------------------------------------------------------------
+// BUILD RIGHT ROW (Welding World, 4 bays, unit 0 = OPEN, front-right)
+// ---------------------------------------------------------------
+let z = Z_START;
+const rightZEdges = [];
+for (let i=0; i<RIGHT_COUNT; i++) {
+  const z0 = z, z1 = z + UNIT_W, zc = (z0+z1)/2;
+  rightZEdges.push([z0,z1]);
+  if (i === 0) {
+    // WAREHOUSE 1 — PAINT (viewer's LEFT looking down the courtyard)
+    // enclosed downdraft booth up front, open-face prep booth at the back
+    buildOpenUnit(FRONT_X_RIGHT, +1, zc, z0, z1, false);
+    buildPaintBooth(FRONT_X_RIGHT + 5.5,  z0 + 2.25, Math.PI, 'Paint Booth (WH 1)');
+    buildPrepBooth (FRONT_X_RIGHT + 16.5, z0 + 2.40, Math.PI, 'Prep Booth (WH 1 rear)');
+    addBayFitout(FRONT_X_RIGHT, +1, z0, z1);
+  } else {
+    buildClosedUnit(FRONT_X_RIGHT, +1, zc);
+  }
+  z = z1;
+  if (i < RIGHT_COUNT-1) {
+    buildDivider(FRONT_X_RIGHT, +1, z + WALL_T/2);
+    z += WALL_T;
+  }
+}
+const rightFarZ = z;
+
+// ---------------------------------------------------------------
+// BUILD LEFT ROW (2 bays, all closed)
+// ---------------------------------------------------------------
+z = Z_START;
+for (let i=0; i<LEFT_COUNT; i++) {
+  const z0 = z, z1 = z + UNIT_W, zc = (z0+z1)/2;
+  if (i === 3) {
+    // WAREHOUSE 4 — SANDING (viewer's RIGHT looking down the courtyard)
+    buildOpenUnit(FRONT_X_LEFT, -1, zc, z0, z1, false);
+    buildProcessCell(FRONT_X_LEFT - 5.0, z0 + 1.82, 0, 'Sanding Station (WH 4)', 'sand');
+    addBayFitout(FRONT_X_LEFT, -1, z0, z1);
+  } else {
+    buildClosedUnit(FRONT_X_LEFT, -1, zc);
+  }
+  z = z1;
+  if (i < LEFT_COUNT-1) {
+    buildDivider(FRONT_X_LEFT, -1, z + WALL_T/2);
+    z += WALL_T;
+  }
+}
+
+// ---------------------------------------------------------------
+// BACK WALL closing the far end of the courtyard, with its own door
+// ---------------------------------------------------------------
+const backZ = rightFarZ + 1.2;
+const backWallW = FRONT_X_RIGHT - FRONT_X_LEFT; // 14
+addBox(buildingGroup, backWallW, UNIT_H*0.85, 0.5, (FRONT_X_LEFT+FRONT_X_RIGHT)/2, (UNIT_H*0.85)/2, backZ, concreteMat);
+addDoorPlane(buildingGroup, (FRONT_X_LEFT+FRONT_X_RIGHT)/2, DOOR_H*0.8/2, backZ-0.28, 1, true);
+
+// simple trees behind the back wall for depth (matches reference photos)
+function makeTree(x,z,scale=1){
+  const g = new THREE.Group();
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.18*scale,0.22*scale,1.6*scale,6), trunkMat);
+  trunk.position.set(0,0.8*scale,0);
+  const leaves = new THREE.Mesh(new THREE.SphereGeometry(1.2*scale,7,6), leafMat);
+  leaves.position.set(0,2.1*scale,0);
+  trunk.castShadow=true; leaves.castShadow=true;
+  g.add(trunk); g.add(leaves);
+  g.position.set(x,0,z);
+  scene.add(g);
+}
+for (let i=-1;i<=1;i++) makeTree(i*4.5 + 1, backZ+3.5, 1+Math.random()*0.4);
+makeTree(-6, backZ+4, 1.2);
+makeTree(6.5, backZ+4.5, 0.9);
+
+// ---------------------------------------------------------------
+// AMAZON-STYLE FLOOR ROBOTS (AGV drive units)
+// shuttle loop: right-row bay 1  <->  left-row bay 4 (the cell bay)
+// ---------------------------------------------------------------
+const agvOrange = new THREE.MeshStandardMaterial({ color:0xd9741a, roughness:0.55, metalness:0.2 });
+const agvDark   = new THREE.MeshStandardMaterial({ color:0x2e3034, roughness:0.6, metalness:0.3 });
+const agvGray   = new THREE.MeshStandardMaterial({ color:0x8a8f94, roughness:0.55, metalness:0.45 });
+const tireMat   = new THREE.MeshStandardMaterial({ color:0x17181a, roughness:0.95 });
+
+function makeLoop(pts) {
+  const v = pts.map(p => new THREE.Vector3(p[0], 0, p[1]));
+  const segs = [];
+  let total = 0;
+  for (let i = 0; i < v.length; i++) {
+    const a = v[i], b = v[(i+1) % v.length];
+    const len = a.distanceTo(b);
+    segs.push({ a:a, b:b, len:len, start:total });
+    total += len;
+  }
+  return {
+    total: total,
+    at: function(d) {
+      d = ((d % total) + total) % total;
+      for (let i = 0; i < segs.length; i++) {
+        const s = segs[i];
+        if (d <= s.start + s.len || i === segs.length - 1) {
+          const t = Math.min(Math.max((d - s.start) / s.len, 0), 1);
+          return {
+            pos: s.a.clone().lerp(s.b, t),
+            dir: s.b.clone().sub(s.a).normalize(),
+            seg: i
+          };
+        }
+      }
+    }
+  };
+}
+
+function buildAGV() {
+  const g = new THREE.Group();
+  // lower skirt
+  addBox(g, 0.78, 0.11, 0.91, 0, 0.075, 0, agvGray);
+  // orange body
+  addBox(g, 0.72, 0.25, 0.85, 0, 0.25, 0, agvOrange);
+  // dark end panels
+  addBox(g, 0.735, 0.15, 0.22, 0, 0.20,  0.33, agvDark, false);
+  addBox(g, 0.735, 0.15, 0.22, 0, 0.20, -0.33, agvDark, false);
+  // top plate + lift disc
+  addBox(g, 0.68, 0.05, 0.80, 0, 0.395, 0, agvGray);
+  const lift = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, 0.06, 20), agvGray);
+  lift.position.y = 0.44; lift.castShadow = true;
+  g.add(lift);
+  // drive wheels
+  const wheels = [];
+  [-1, 1].forEach(s => {
+    const w = new THREE.Mesh(new THREE.CylinderGeometry(0.115, 0.115, 0.07, 16), tireMat);
+    w.rotation.z = Math.PI/2;
+    w.position.set(s*0.375, 0.115, 0);
+    w.castShadow = true;
+    g.add(w);
+    wheels.push(w);
+  });
+  // corner casters
+  [[-0.28,0.36],[0.28,0.36],[-0.28,-0.36],[0.28,-0.36]].forEach(([x,z]) => {
+    const c = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 6), agvDark);
+    c.position.set(x, 0.05, z);
+    g.add(c);
+  });
+  // nav sensor block + e-stop + indicator lights
+  addBox(g, 0.16, 0.09, 0.14, 0, 0.44, 0.3, agvDark, false);
+  const estop = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.03, 12),
+    new THREE.MeshStandardMaterial({ color:0xc0261c, emissive:0x8a1a12, emissiveIntensity:0.4 }));
+  estop.rotation.x = Math.PI/2;
+  estop.position.set(0.14, 0.23, 0.43);
+  g.add(estop);
+  ['#cfd4d8','#cfd4d8','#cfd4d8'].forEach((c, i) => {
+    const d = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.02, 10),
+      new THREE.MeshStandardMaterial({ color:c, emissive:0x88909a, emissiveIntensity:0.3 }));
+    d.rotation.x = Math.PI/2;
+    d.position.set(-0.05 + i*0.07, 0.23, 0.43);
+    g.add(d);
+  });
+  // ---- carried bracket (shown only on the sanded -> paint leg)
+  const load = new THREE.Group();
+  load.position.y = 0.47;
+  g.add(load);
+  addBox(load, 0.6, 0.07, 1.25, 0, 0.30, 0, alumPartMat);
+  [-1,1].forEach(s => {
+    addBox(load, 0.08, 0.24, 1.25, s*0.21, 0.15, 0, alumPartMat);
+    addBox(load, 0.2, 0.07, 1.25, s*0.21, 0.02, 0, alumPartMat, false);
+  });
+  [-0.4, 0, 0.4].forEach(pz => {
+    addBox(load, 0.42, 0.24, 0.1, 0, 0.15, pz, alumPartMat, false);
+  });
+  load.visible = false;
+
+  // swap the carried bracket between raw aluminum and painted, or hide it
+  const loadMeshes = [];
+  load.traverse(function(o) { if (o.isMesh) loadMeshes.push(o); });
+  function setLoad(visible, painted) {
+    load.visible = visible;
+    const m = painted ? paintedPartMat : alumPartMat;
+    for (let i = 0; i < loadMeshes.length; i++) loadMeshes[i].material = m;
+  }
+
+  scene.add(g);
+  return { group: g, wheels: wheels, load: load, setLoad: setLoad };
+}
+
+// ---- process route. dwell = seconds stopped on arrival; door = keep booth doors open
+const ROUTE = [
+  { p:[-12.00, 29.40], dwell:3.0, act:'pickup' },  // 0  at the sanding cell, WH4
+  { p:[ -3.00, 29.40] },                           // 1  out of WH4
+  { p:[  2.00, 26.00] },                           // 2  into the driveway
+  { p:[  2.00,  8.00] },                           // 3  up the driveway
+  { p:[  5.00,  4.25] },                           // 4  line up with the booth doors
+  { p:[  8.60,  4.25], door:true },                // 5  on the ramp / threshold
+  { p:[ 11.30,  4.25], dwell:5.0, act:'paint', door:true }, // 6  INSIDE the paint booth
+  { p:[  8.60,  4.25], door:true },                // 7  back out
+  { p:[  8.60,  7.20] },                           // 8  swing into the bay aisle
+  { p:[ 20.50,  7.20] },                           // 9  down the aisle
+  { p:[ 20.50,  3.40] },                           // 10 line up with the prep booth
+  { p:[ 23.00,  3.40], dwell:3.0, act:'drop' },    // 11 INSIDE the prep booth — leave the bracket
+  { p:[ 20.60,  3.40] },                           // 12 back out
+  { p:[ 20.60,  7.20] },                           // 13
+  { p:[  8.00,  7.20] },                           // 14 back up the aisle
+  { p:[  5.00,  5.50] },                           // 15 out the bay door
+  { p:[  5.50, 10.00] },                           // 16
+  { p:[  5.50, 26.00] },                           // 17 back down the driveway
+  { p:[ -3.00, 29.40] }                            // 18 into WH4 for the next bracket
+];
+const NODES = ROUTE.map(function(n) { return new THREE.Vector3(n.p[0], 0, n.p[1]); });
+
+// ---- the finished bracket that gets left behind in the prep booth
+const dropped = new THREE.Group();
+dropped.position.set(23.0, 0, 3.4);
+scene.add(dropped);
+addBox(dropped, 1.15, 0.16, 0.85, 0, 0.08, 0, palletMat, false);
+addBox(dropped, 1.25, 0.07, 0.6, 0, 0.46, 0, paintedPartMat);
+[-1,1].forEach(function(s) {
+  addBox(dropped, 1.25, 0.24, 0.08, 0, 0.31, s*0.21, paintedPartMat);
+  addBox(dropped, 1.25, 0.07, 0.2, 0, 0.18, s*0.21, paintedPartMat, false);
+});
+dropped.visible = false;
+
+const AGV_COUNT = 2;
+const START_NODES = [0, 10];
+
+for (let i = 0; i < AGV_COUNT; i++) {
+  const bot = buildAGV();
+  const st = {
+    target: START_NODES[i],
+    pos: NODES[(START_NODES[i] - 1 + NODES.length) % NODES.length].clone(),
+    yaw: 0,
+    wait: i * 2.2,
+    last: (START_NODES[i] - 1 + NODES.length) % NODES.length,
+    wantsPaintDoor: false,
+    carrying: (START_NODES[i] > 0 && START_NODES[i] <= 11),
+    speed: 1.9 + Math.random() * 0.5,
+    odo: 0
+  };
+  agvs.push(st);
+  bot.load.visible = st.carrying;
+  bot.group.position.copy(st.pos);
+
+  const dir = new THREE.Vector3();
+  animators.push(function(t, dt) {
+    dt = dt || 0.016;
+
+    if (st.wait > 0) {
+      st.wait -= dt;
+    } else {
+      const tgt = NODES[st.target];
+      dir.subVectors(tgt, st.pos);
+      const dist = dir.length();
+      if (dist < 0.06) {
+        st.pos.copy(tgt);
+        st.last = st.target;
+        const node = ROUTE[st.target];
+        if (node.act === 'pickup') {
+          st.carrying = true;
+          bot.setLoad(true, false);   // raw aluminum out of the sanding cell
+          dropped.visible = false;    // the last one has moved on down the line
+        } else if (node.act === 'paint') {
+          bot.setLoad(true, true);    // comes out of the booth painted
+        } else if (node.act === 'drop') {
+          st.carrying = false;
+          bot.setLoad(false, true);
+          dropped.visible = true;     // bracket stays behind in the prep booth
+        }
+        st.wait = node.dwell || 0;
+        st.target = (st.target + 1) % NODES.length;
+      } else {
+        const step = Math.min(st.speed * dt, dist);
+        dir.divideScalar(dist);
+        st.pos.addScaledVector(dir, step);
+        st.odo += step;
+        const want = Math.atan2(dir.x, dir.z);
+        let diff = want - st.yaw;
+        while (diff >  Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        st.yaw += diff * Math.min(1, dt * 5.0);
+      }
+    }
+
+    st.wantsPaintDoor = !!(ROUTE[st.target].door || (st.wait > 0 && ROUTE[st.last].door));
+
+    bot.group.position.copy(st.pos);
+    bot.group.rotation.y = st.yaw;
+    const spin = st.odo / 0.115;
+    bot.wheels[0].rotation.y = spin;
+    bot.wheels[1].rotation.y = spin;
+  });
+}
+
+// ---------------------------------------------------------------
+// CONTROLS (custom pointer-lock god-mode fly camera)
+// ---------------------------------------------------------------
+const blocker = document.getElementById('blocker');
+const crosshair = document.getElementById('crosshair');
+const canvas = renderer.domElement;
+
+let yaw = START_YAW, pitch = 0;
+const PITCH_LIMIT = Math.PI/2 - 0.02;
+const MOUSE_SENS = 0.0022;
+
+blocker.addEventListener('click', () => {
+  canvas.requestPointerLock();
+});
+
+document.addEventListener('pointerlockchange', () => {
+  const locked = document.pointerLockElement === canvas;
+  blocker.style.display = locked ? 'none' : 'flex';
+  crosshair.style.display = locked ? 'block' : 'none';
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (document.pointerLockElement !== canvas) return;
+  yaw   -= e.movementX * MOUSE_SENS;
+  pitch -= e.movementY * MOUSE_SENS;
+  pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, pitch));
+  camera.rotation.set(pitch, yaw, 0, 'YXZ');
+});
+
+const keys = {};
+document.addEventListener('keydown', (e) => {
+  keys[e.code] = true;
+  if (e.code === 'KeyM') setMoveMode(!moveMode);
+  if (e.code === 'Tab' && moveMode) { e.preventDefault(); selectNext(); }
+  if (moveMode && (e.code === 'ArrowUp' || e.code === 'ArrowDown' ||
+                   e.code === 'ArrowLeft' || e.code === 'ArrowRight')) e.preventDefault();
+  if (e.code === 'KeyR') {
+    camera.position.copy(START_POS);
+    yaw = START_YAW; pitch = 0;
+    camera.rotation.set(0, yaw, 0, 'YXZ');
+  }
+  if (e.code === 'Escape' && document.pointerLockElement === canvas) {
+    document.exitPointerLock();
+  }
+});
+document.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+const BASE_SPEED = 8.5;
+const RUN_MULT = 2.6;
+const VERT_SPEED = 7.5;
+
+const fwd = new THREE.Vector3();
+const right = new THREE.Vector3();
+const moveDir = new THREE.Vector3();
+const up = new THREE.Vector3(0,1,0);
+
+function updateMovement(dt) {
+  camera.getWorldDirection(fwd);
+  fwd.y = 0;
+  if (fwd.lengthSq() < 1e-6) fwd.set(0,0,1); else fwd.normalize();
+  right.crossVectors(fwd, up).normalize();
+
+  moveDir.set(0,0,0);
+  if (keys['KeyW']) moveDir.add(fwd);
+  if (keys['KeyS']) moveDir.sub(fwd);
+  if (keys['KeyD']) moveDir.add(right);
+  if (keys['KeyA']) moveDir.sub(right);
+
+  const speed = BASE_SPEED * (keys['ShiftLeft'] || keys['ShiftRight'] ? RUN_MULT : 1);
+  if (moveDir.lengthSq() > 0) {
+    moveDir.normalize().multiplyScalar(speed * dt);
+    camera.position.add(moveDir);
+  }
+
+  let vY = 0;
+  if (keys['KeyE']) vY += 1;
+  if (keys['KeyQ']) vY -= 1;
+  if (vY !== 0) camera.position.y += vY * VERT_SPEED * dt;
+
+  camera.position.y = Math.max(0.6, camera.position.y);
+}
+
+// ---------------------------------------------------------------
+// MOVE MODE — reposition the sanding cells in the bay
+// ---------------------------------------------------------------
+const movebar = document.getElementById('movebar');
+let moveMode = false;
+let selected = 0;
+let selBox = null;
+
+function refreshMovebar() {
+  if (!moveMode || !cells.length) { movebar.style.display = 'none'; return; }
+  const c = cells[selected].group;
+  const deg = Math.round(c.rotation.y * 180 / Math.PI);
+  movebar.style.display = 'block';
+  movebar.innerHTML =
+    '<b>MOVE MODE</b> — ' + cells[selected].label +
+    ' &nbsp;|&nbsp; x ' + c.position.x.toFixed(2) + ' , z ' + c.position.z.toFixed(2) + ' , ' + deg + '&deg;' +
+    ' &nbsp;|&nbsp; Arrows move · [ ] rotate · Tab next · M exit';
+}
+
+function setMoveMode(on) {
+  moveMode = on;
+  if (on && !selBox) {
+    selBox = new THREE.BoxHelper(cells[selected].group, 0xffb400);
+    selBox.material.depthTest = false;
+    scene.add(selBox);
+  }
+  if (selBox) selBox.visible = on;
+  if (on && selBox) selBox.setFromObject(cells[selected].group);
+  refreshMovebar();
+}
+
+function selectNext() {
+  selected = (selected + 1) % cells.length;
+  if (selBox) selBox.setFromObject(cells[selected].group);
+  refreshMovebar();
+}
+
+function updateMoveMode(dt) {
+  if (!moveMode || !cells.length) return;
+  const c = cells[selected].group;
+
+  // camera-relative nudging so the arrows feel natural
+  camera.getWorldDirection(fwd);
+  fwd.y = 0;
+  if (fwd.lengthSq() < 1e-6) fwd.set(0,0,1); else fwd.normalize();
+  right.crossVectors(fwd, up).normalize();
+
+  const spd = (keys['ShiftLeft'] || keys['ShiftRight'] ? 6.0 : 2.0) * dt;
+  let moved = false;
+  if (keys['ArrowUp'])    { c.position.addScaledVector(fwd,  spd); moved = true; }
+  if (keys['ArrowDown'])  { c.position.addScaledVector(fwd, -spd); moved = true; }
+  if (keys['ArrowRight']) { c.position.addScaledVector(right,  spd); moved = true; }
+  if (keys['ArrowLeft'])  { c.position.addScaledVector(right, -spd); moved = true; }
+  if (keys['BracketRight']) { c.rotation.y += 0.9 * dt; moved = true; }
+  if (keys['BracketLeft'])  { c.rotation.y -= 0.9 * dt; moved = true; }
+
+  if (moved) {
+    if (selBox) selBox.setFromObject(c);
+    refreshMovebar();
+  }
+}
+
+// ---------------------------------------------------------------
+// WEBXR — Quest 3 / standalone headset support
+// ---------------------------------------------------------------
+const vrbtn = document.getElementById('vrbtn');
+let xrSession = null;
+
+// controller stems so you can see your hands in the scene
+const ctrlMat = new THREE.MeshStandardMaterial({ color:0x2a2e33, roughness:0.5, metalness:0.4 });
+const controllers = [];
+for (let i = 0; i < 2; i++) {
+  const c = renderer.xr.getController(i);
+  const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.026, 0.13, 10), ctrlMat);
+  stem.rotation.x = -Math.PI/2;
+  c.add(stem);
+  const beam = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-1.4)]),
+    new THREE.LineBasicMaterial({ color: 0x66c2ff, transparent:true, opacity:0.55 })
+  );
+  c.add(beam);
+  player.add(c);
+  controllers.push(c);
+}
+
+// lighten the scene for mobile-class GPUs while in VR
+let vrQualityApplied = false;
+function applyVRQuality(on) {
+  scene.traverse(function(o) {
+    if (o.isPointLight) o.castShadow = on ? false : o.userData._cs;
+  });
+  if (on && !vrQualityApplied) {
+    scene.traverse(function(o) { if (o.isPointLight) o.userData._cs = o.castShadow; });
+    if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
+    sun.shadow.mapSize.set(1024, 1024);
+    vrQualityApplied = true;
+  }
+}
+
+function onVRStart() {
+  // step into the world where the desktop camera was standing
+  player.position.set(camera.position.x, 0, camera.position.z);
+  player.rotation.set(0, yaw, 0);
+  camera.position.set(0, 0, 0);
+  camera.rotation.set(0, 0, 0);
+  applyVRQuality(true);
+  blocker.style.display = 'none';
+  vrbtn.textContent = 'EXIT VR';
+}
+
+function onVREnd() {
+  camera.position.set(player.position.x, 1.7, player.position.z);
+  yaw = player.rotation.y; pitch = 0;
+  camera.rotation.set(0, yaw, 0, 'YXZ');
+  player.position.set(0, 0, 0);
+  player.rotation.set(0, 0, 0);
+  blocker.style.display = 'flex';
+  vrbtn.textContent = 'ENTER VR';
+  xrSession = null;
+}
+
+if (!('xr' in navigator)) {
+  vrbtn.textContent = 'VR NOT SUPPORTED';
+  vrbtn.disabled = true;
+} else {
+  navigator.xr.isSessionSupported('immersive-vr').then(function(ok) {
+    if (!ok) { vrbtn.textContent = 'VR NOT AVAILABLE'; vrbtn.disabled = true; return; }
+    vrbtn.textContent = 'ENTER VR';
+    vrbtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      if (xrSession) { xrSession.end(); return; }
+      navigator.xr.requestSession('immersive-vr', {
+        optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking']
+      }).then(function(session) {
+        xrSession = session;
+        session.addEventListener('end', onVREnd);
+        renderer.xr.setSession(session).then(onVRStart);
+      });
+    });
+  });
+}
+
+// ---- thumbstick locomotion: left stick = move, right stick = turn / fly
+const VR_SPEED = 2.6, VR_FLY = 1.8, SNAP = Math.PI/6;
+let snapReady = true;
+const headQ = new THREE.Quaternion();
+const headFwd = new THREE.Vector3();
+const headRight = new THREE.Vector3();
+const headPos = new THREE.Vector3();
+
+function updateVR(dt) {
+  const session = renderer.xr.getSession();
+  if (!session) return;
+
+  let mx = 0, my = 0, tx = 0, ty = 0, boost = 1;
+  session.inputSources.forEach(function(src) {
+    const gp = src.gamepad;
+    if (!gp || !gp.axes) return;
+    const ax = gp.axes.length > 2 ? gp.axes[2] : gp.axes[0];
+    const ay = gp.axes.length > 3 ? gp.axes[3] : gp.axes[1];
+    if (src.handedness === 'left')  { mx = ax; my = ay; }
+    if (src.handedness === 'right') { tx = ax; ty = ay; }
+    if (gp.buttons && gp.buttons[0] && gp.buttons[0].pressed) boost = 2.4;
+  });
+
+  const dead = 0.15;
+  camera.getWorldQuaternion(headQ);
+  headFwd.set(0, 0, -1).applyQuaternion(headQ); headFwd.y = 0;
+  if (headFwd.lengthSq() < 1e-6) headFwd.set(0, 0, -1); else headFwd.normalize();
+  headRight.crossVectors(headFwd, up).normalize();
+
+  if (Math.abs(my) > dead) player.position.addScaledVector(headFwd, -my * VR_SPEED * boost * dt);
+  if (Math.abs(mx) > dead) player.position.addScaledVector(headRight, mx * VR_SPEED * boost * dt);
+  if (Math.abs(ty) > dead) player.position.y += -ty * VR_FLY * boost * dt;
+  player.position.y = Math.max(0, player.position.y);
+
+  // snap turn around the headset, so it feels like turning in place
+  if (Math.abs(tx) > 0.7) {
+    if (snapReady) {
+      const a = tx > 0 ? -SNAP : SNAP;
+      camera.getWorldPosition(headPos);
+      player.position.sub(headPos).applyAxisAngle(up, a).add(headPos);
+      player.rotation.y += a;
+      snapReady = false;
+    }
+  } else if (Math.abs(tx) < 0.4) {
+    snapReady = true;
+  }
+}
+
+// ---------------------------------------------------------------
+// RENDER LOOP
+// ---------------------------------------------------------------
+const clock = new THREE.Clock();
+let elapsed = 0;
+renderer.setAnimationLoop(function() {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  elapsed += dt;
+  if (renderer.xr.isPresenting) {
+    updateVR(dt);
+  } else if (document.pointerLockElement === canvas) {
+    updateMovement(dt);
+    updateMoveMode(dt);
+  }
+  for (let i=0; i<animators.length; i++) animators[i](elapsed, dt);
+  renderer.render(scene, camera);
+});
+
+})();
+</script>
+</body>
+</html>
